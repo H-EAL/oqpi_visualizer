@@ -1,0 +1,9 @@
+[submodule "external/websocketpp"]
+	path = external/websocketpp
+	url = https://github.com/zaphoyd/websocketpp.git
+[submodule "external/oqpi"]
+	path = external/oqpi
+	url = https://github.com/H-EAL/oqpi.git
+[submodule "external/asio"]
+	path = external/asio
+	url = https://github.com/chriskohlhoff/asio.git
