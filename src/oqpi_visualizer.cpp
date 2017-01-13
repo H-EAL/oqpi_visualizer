@@ -1,209 +1,260 @@
-#define ASIO_STANDALONE
-#define _WEBSOCKETPP_CPP11_TYPE_TRAITS_
-#include "websocketpp/config/asio_no_tls.hpp"
-#include "websocketpp/server.hpp"
+#include <iostream>
+#include <queue>
+#include <mutex>
 
 #include "oqpi.hpp"
 
-#include <fstream>
-#include <iostream>
-#include <set>
-#include <streambuf>
-#include <string>
+#include "cqueue.hpp"
+#include "timer_contexts.hpp"
 
-/**
-* The telemetry server accepts connections and sends a message every second to
-* each client containing an integer count. This example can be used as the
-* basis for programs that expose a stream of telemetry data for logging,
-* dashboards, etc.
-*
-* This example uses the timer based concurrency method and is self contained
-* and singled threaded. Refer to telemetry client for an example of a similar
-* telemetry setup using threads rather than timers.
-*
-* This example also includes an example simple HTTP server that serves a web
-* dashboard displaying the count. This simple design is suitable for use
-* delivering a small number of files to a small number of clients. It is ideal
-* for cases like embedded dashboards that don't want the complexity of an extra
-* HTTP server to serve static files.
-*
-* This design *will* fall over under high traffic or DoS conditions. In such
-* cases you are much better off proxying to a real HTTP server for the http
-* requests.
-*/
-class telemetry_server {
-public:
-    typedef websocketpp::connection_hdl connection_hdl;
-    typedef websocketpp::server<websocketpp::config::asio> server;
+using namespace std::chrono_literals;
 
-    telemetry_server() : m_count(0) {
-        // set up access channels to only log interesting things
-        m_endpoint.clear_access_channels(websocketpp::log::alevel::all);
-        m_endpoint.set_access_channels(websocketpp::log::alevel::access_core);
-        m_endpoint.set_access_channels(websocketpp::log::alevel::app);
+//--------------------------------------------------------------------------------------------------
+// Types
+using thread = oqpi::thread_interface;
+using semaphore = oqpi::semaphore_interface;
+template<typename T>
+using cqueue = qqueue<T, std::mutex>;
+using scheduler_type = oqpi::scheduler<cqueue>;
+using gc = oqpi::group_context_container<timer_group_context>;
+using tc = oqpi::task_context_container<timer_task_context>;
+using oqpi_tk = oqpi::helpers<scheduler_type, gc, tc>;
 
-        // Initialize the Asio transport policy
-        m_endpoint.init_asio();
 
-        // Bind the handlers we are using
-        using websocketpp::lib::placeholders::_1;
-        using websocketpp::lib::bind;
-        m_endpoint.set_open_handler(bind(&telemetry_server::on_open, this, _1));
-        m_endpoint.set_close_handler(bind(&telemetry_server::on_close, this, _1));
-        m_endpoint.set_http_handler(bind(&telemetry_server::on_http, this, _1));
+//--------------------------------------------------------------------------------------------------
+void setup_environment()
+{
+    //     std::cout << "-------------------------------------------------------------------" << std::endl;
+    //     std::cout << __FUNCTION__ << std::endl;
+    //     std::cout << "-------------------------------------------------------------------" << std::endl;
+    const auto workerCount = thread::hardware_concurrency();
+    for (auto i = 0u; i < workerCount; ++i)
+    {
+        auto config = oqpi::worker_config{};
+        config.threadAttributes.coreAffinityMask_ = oqpi::core_affinity(1 << i);
+        config.threadAttributes.name_ = "oqpi::worker_" + std::to_string(i);
+        config.threadAttributes.priority_ = oqpi::thread_priority::highest;
+        config.workerPrio = oqpi::worker_priority::wprio_any;
+        config.count = 1;
+        oqpi_tk::scheduler().registerWorker<thread, semaphore>(config);
     }
 
-    void run(std::string docroot, uint16_t port) {
-        std::stringstream ss;
-        ss << "Running telemetry server on port " << port << " using docroot=" << docroot;
-        m_endpoint.get_alog().write(websocketpp::log::alevel::app, ss.str());
+    timing_registry::get();
 
-        m_docroot = docroot;
+    oqpi_tk::scheduler().start();
+    //    std::cout << std::endl << std::endl;
+}
 
-        // listen on specified port
-        m_endpoint.listen(port);
 
-        // Start the server accept loop
-        m_endpoint.start_accept();
+//--------------------------------------------------------------------------------------------------
+static constexpr auto gValue = 10000000ull;
+static const auto gTaskCount = int(thread::hardware_concurrency());
 
-        // Set the initial timer to start telemetry
-        set_timer();
+//--------------------------------------------------------------------------------------------------
+uint64_t fibonacci(uint64_t n)
+{
+    uint64_t a = 1, b = 1;
+    for (uint64_t i = 3; i <= n; ++i)
+    {
+        uint64_t c = a + b;
+        a = b;
+        b = c;
+    }
+    return b;
+}
 
-        // Start the ASIO io_service run loop
-        try {
-            m_endpoint.run();
+//--------------------------------------------------------------------------------------------------
+void test_unit_task_result()
+{
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << __FUNCTION__ << std::endl;
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    auto spTask = oqpi_tk::make_task("FibonacciReturnResult", oqpi::task_priority::normal, fibonacci, gValue);
+    oqpi_tk::schedule_task(spTask);
+    std::cout << "Fibonacci(" << gValue << ") = " << spTask->waitForResult() << std::endl;
+
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
+
+//--------------------------------------------------------------------------------------------------
+void test_unit_task()
+{
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << __FUNCTION__ << std::endl;
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    auto spTask = oqpi_tk::make_task("Fibonacci4x", oqpi::task_priority::normal, []
+    {
+        for (int i = 0; i < gTaskCount; ++i)
+        {
+            volatile auto a = 0ull;
+            a += fibonacci(gValue + a);
         }
-        catch (websocketpp::exception const & e) {
-            std::cout << e.what() << std::endl;
+    });
+    oqpi_tk::schedule_task(spTask).wait();
+
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
+
+//--------------------------------------------------------------------------------------------------
+void test_multiple_unit_tasks()
+{
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << __FUNCTION__ << std::endl;
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::vector<oqpi::task_handle> handles(gTaskCount);
+    for (auto i = 0; i < gTaskCount; ++i)
+    {
+        handles[i] = oqpi_tk::make_task("Fibonacci4xWait", oqpi::task_priority::normal, fibonacci, gValue);
+        oqpi_tk::schedule_task(handles[i]);
+    }
+    for (auto &h : handles)
+    {
+        h.wait();
+    }
+
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
+
+//--------------------------------------------------------------------------------------------------
+void test_sequence_group()
+{
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << __FUNCTION__ << std::endl;
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    auto spSeq = oqpi_tk::make_sequence_group<oqpi::task_type::waitable>("Sequence");
+    for (auto i = 0; i < gTaskCount; ++i)
+    {
+        auto spTask = oqpi_tk::make_task_item("FibonacciSeq" + std::to_string(i), oqpi::task_priority::normal, fibonacci, gValue);
+        spSeq->addTask(spTask);
+    }
+    oqpi_tk::schedule_task(oqpi::task_handle(spSeq)).wait();
+
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
+
+//--------------------------------------------------------------------------------------------------
+void test_parallel_group()
+{
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << __FUNCTION__ << std::endl;
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    auto spFork = oqpi_tk::make_parallel_group<oqpi::task_type::waitable>("Fork", oqpi::task_priority::normal, gTaskCount);
+    for (auto i = 0; i < gTaskCount; ++i)
+    {
+        auto spTask = oqpi_tk::make_task_item("FibonacciFork" + std::to_string(i), oqpi::task_priority::normal, fibonacci, gValue);
+        spFork->addTask(spTask);
+    }
+    oqpi_tk::schedule_task(oqpi::task_handle(spFork)).wait();
+
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
+
+//--------------------------------------------------------------------------------------------------
+void test_sequence_of_parallel_groups()
+{
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << __FUNCTION__ << std::endl;
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    auto spSeq = oqpi_tk::make_sequence_group<oqpi::task_type::waitable>("Sequence");
+    for (auto i = 0; i < gTaskCount; ++i)
+    {
+        auto spFork = oqpi_tk::make_parallel_group<oqpi::task_type::fire_and_forget>("Fork" + std::to_string(i), oqpi::task_priority::normal, gTaskCount);
+        for (auto j = 0; j < gTaskCount; ++j)
+        {
+            auto spTask = oqpi_tk::make_task_item("Fibonacci_" + std::to_string(i * 10 + j), oqpi::task_priority::normal, fibonacci, gValue);
+            spFork->addTask(spTask);
         }
+        spSeq->addTask(oqpi::task_handle(spFork));
     }
+    oqpi_tk::schedule_task(oqpi::task_handle(spSeq)).wait();
 
-    void set_timer() {
-        m_timer = m_endpoint.set_timer(
-            1000,
-            websocketpp::lib::bind(
-                &telemetry_server::on_timer,
-                this,
-                websocketpp::lib::placeholders::_1
-                )
-            );
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
+
+//--------------------------------------------------------------------------------------------------
+void test_parallel_for_task()
+{
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << __FUNCTION__ << std::endl;
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    const auto prio = oqpi::task_priority::normal;
+    const auto partitioner = oqpi::simple_partitioner(gTaskCount, oqpi_tk::scheduler().workersCount(prio));
+    auto spParallelForGroup = oqpi_tk::make_parallel_for_task_group<oqpi::task_type::waitable>("FibonacciParallelForGroup", partitioner, prio,
+        [](int32_t)
+    {
+        volatile auto a = 0ull;
+        a += fibonacci(gValue + a);
+    });
+    oqpi_tk::schedule_task(oqpi::task_handle(spParallelForGroup)).wait();
+
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
+
+//--------------------------------------------------------------------------------------------------
+void test_parallel_for()
+{
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << __FUNCTION__ << std::endl;
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    const auto prio = oqpi::task_priority::normal;
+    const auto partitioner = oqpi::simple_partitioner(gTaskCount, oqpi_tk::scheduler().workersCount(prio));
+    oqpi_tk::parallel_for("FibonacciParallelFor", partitioner, prio,
+        [](int32_t)
+    {
+        volatile auto a = 0ull;
+        a += fibonacci(gValue + a);
+    });
+
+    std::cout << "-------------------------------------------------------------------" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
+
+//--------------------------------------------------------------------------------------------------
+void clean_up_environement()
+{
+    oqpi::this_thread::sleep_for(500ms);
+    oqpi_tk::scheduler().stop();
+}
+
+
+//--------------------------------------------------------------------------------------------------
+int main()
+{
+    setup_environment();
+    while (true)
+    {
+        oqpi::this_thread::sleep_for(5ms);
+        test_unit_task_result();
+        oqpi::this_thread::sleep_for(5ms);
+        test_unit_task();
+        oqpi::this_thread::sleep_for(5ms);
+        test_multiple_unit_tasks();
+        oqpi::this_thread::sleep_for(5ms);
+        test_sequence_group();
+        oqpi::this_thread::sleep_for(5ms);
+        test_parallel_group();
+        oqpi::this_thread::sleep_for(5ms);
+        test_sequence_of_parallel_groups();
+        oqpi::this_thread::sleep_for(5ms);
+        test_parallel_for();
+        oqpi::this_thread::sleep_for(5ms);
+        test_parallel_for_task();
+        oqpi::this_thread::sleep_for(10s);
     }
-
-    void on_timer(websocketpp::lib::error_code const & ec) {
-        if (ec) {
-            // there was an error, stop telemetry
-            m_endpoint.get_alog().write(websocketpp::log::alevel::app,
-                "Timer Error: " + ec.message());
-            return;
-        }
-
-        std::stringstream val;
-        val << "count is " << m_count++;
-
-        // Broadcast count to all connections
-        con_list::iterator it;
-        for (it = m_connections.begin(); it != m_connections.end(); ++it) {
-            m_endpoint.send(*it, val.str(), websocketpp::frame::opcode::text);
-        }
-
-        // set timer for next telemetry check
-        set_timer();
-    }
-
-    void on_http(connection_hdl hdl) {
-        // Upgrade our connection handle to a full connection_ptr
-        server::connection_ptr con = m_endpoint.get_con_from_hdl(hdl);
-
-        std::ifstream file;
-        std::string filename = con->get_resource();
-        std::string response;
-
-        m_endpoint.get_alog().write(websocketpp::log::alevel::app,
-            "http request1: " + filename);
-
-        if (filename == "/") {
-            filename = m_docroot + "index.html";
-        }
-        else {
-            filename = m_docroot + filename.substr(1);
-        }
-
-        m_endpoint.get_alog().write(websocketpp::log::alevel::app,
-            "http request2: " + filename);
-
-        file.open(filename.c_str(), std::ios::in);
-        if (!file) {
-            // 404 error
-            std::stringstream ss;
-
-            ss << "<!doctype html><html><head>"
-                << "<title>Error 404 (Resource not found)</title><body>"
-                << "<h1>Error 404</h1>"
-                << "<p>The requested URL " << filename << " was not found on this server.</p>"
-                << "</body></head></html>";
-
-            con->set_body(ss.str());
-            con->set_status(websocketpp::http::status_code::not_found);
-            return;
-        }
-
-        file.seekg(0, std::ios::end);
-        response.reserve(size_t(file.tellg()));
-        file.seekg(0, std::ios::beg);
-
-        response.assign((std::istreambuf_iterator<char>(file)),
-            std::istreambuf_iterator<char>());
-
-        con->set_body(response);
-        con->set_status(websocketpp::http::status_code::ok);
-    }
-
-    void on_open(connection_hdl hdl) {
-        m_connections.insert(hdl);
-        m_endpoint.send(hdl, "BOUYA!", websocketpp::frame::opcode::text);
-    }
-
-    void on_close(connection_hdl hdl) {
-        m_connections.erase(hdl);
-    }
-private:
-    typedef std::set<connection_hdl, std::owner_less<connection_hdl>> con_list;
-
-    server m_endpoint;
-    con_list m_connections;
-    server::timer_ptr m_timer;
-
-    std::string m_docroot;
-
-    // Telemetry data
-    uint64_t m_count;
-};
-
-int main(int argc, char* argv[]) {
-    telemetry_server s;
-
-    std::string docroot;
-    uint16_t port = 9002;
-
-    if (argc == 1) {
-        std::cout << "Usage: telemetry_server [documentroot] [port]" << std::endl;
-        return 1;
-    }
-
-    if (argc >= 2) {
-        docroot = std::string(argv[1]);
-    }
-
-    if (argc >= 3) {
-        int i = atoi(argv[2]);
-        if (i <= 0 || i > 65535) {
-            std::cout << "invalid port" << std::endl;
-            return 1;
-        }
-
-        port = uint16_t(i);
-    }
-
-    s.run(docroot, port);
-    return 0;
+    clean_up_environement();
 }
