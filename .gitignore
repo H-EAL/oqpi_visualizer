@@ -1,3 +1,4 @@
 tmp/
 *.sdf
 *.opendb
+*.db

@@ -3,7 +3,7 @@
 #include <chrono>
 #include <unordered_map>
 #include "oqpi.hpp"
-#include "visualizer_server.hpp"
+#include "visualizer_client.hpp"
 
 
 int64_t query_performance_counter_aux()
@@ -46,7 +46,7 @@ class timing_registry
 public:
     enum opcode : uint32_t
     {
-        register_task = 568,
+        register_task,
         add_to_group,
         unregister_task,
         start_task,
@@ -56,12 +56,7 @@ public:
     };
 
     timing_registry()
-    {
-        oqpi::thread_interface("VisualizerServer", [this]
-        {
-            server_.run("./", 9002);
-        }).detach();
-    }
+    {}
 
     static timing_registry& get()
     {
@@ -71,22 +66,16 @@ public:
 
     void registerTask(oqpi::task_uid uid, const std::string &name)
     {
-        const auto t = query_performance_counter();
-        const auto oc = opcode::register_task;
-        const auto nameLength = name.length();
-        std::vector<uint8_t> buffer(sizeof(opcode) + sizeof(uid) + sizeof(t) + nameLength);
-        size_t offset = 0;
-        memcpy(buffer.data() + offset, &oc, sizeof(oc));
-        offset += sizeof(oc);
-        memcpy(buffer.data() + offset, &uid, sizeof(uid));
-        offset += sizeof(uid);
-        memcpy(buffer.data() + offset, &t, sizeof(t));
-        offset += sizeof(t);
-        memcpy(buffer.data() + offset, name.c_str(), nameLength);
-        offset += nameLength;
+        auto t = query_performance_counter();
 
-        oqpi_check(offset == buffer.size());
-        server_.send((void*)buffer.data(), buffer.size());
+        std::string msg = "Task #";
+        msg += std::to_string(uid);
+        msg += " named ";
+        msg += name;
+        msg += " created @t=";
+        msg += std::to_string(t);
+
+        client_.send(msg);
     }
 
     void unregisterTask(oqpi::task_uid uid)
@@ -98,7 +87,7 @@ public:
         msg += " deleted @t=";
         msg += std::to_string(t);
 
-        server_.send(msg);
+        client_.send(msg);
     }
 
     void startTask(oqpi::task_uid uid)
@@ -113,7 +102,7 @@ public:
         msg += " @t=";
         msg += std::to_string(t);
 
-        server_.send(msg);
+        client_.send(msg);
     }
 
     void endTask(oqpi::task_uid uid)
@@ -128,7 +117,7 @@ public:
         msg += " @t=";
         msg += std::to_string(t);
 
-        server_.send(msg);
+        client_.send(msg);
     }
 
     void addToGroup(oqpi::task_uid guid, oqpi::task_handle hTask)
@@ -142,11 +131,11 @@ public:
         msg += " @t=";
         msg += std::to_string(t);
 
-        server_.send(msg);
+        client_.send(msg);
     }
 
 private:
-    visualizer_server server_;
+    visualizer_client client_;
 };
 
 class timer_task_context

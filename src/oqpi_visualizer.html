@@ -39,6 +39,11 @@ function connect() {
 	    cleanup_disconnect();
 	};
 	
+	ws.onrequest = function(e) {
+		document.getElementById("messages").innerHTML += "REQUEST!<br />";
+	    cleanup_disconnect();
+	};
+	
 	ws.onmessage = function(e)
 	{
 		var slice = e.data.slice(0,3*4);
