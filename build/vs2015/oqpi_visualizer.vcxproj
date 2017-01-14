@@ -165,7 +165,9 @@
     <ClCompile Include="..\..\src\oqpi_visualizer.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\..\src\buffer_interface.hpp" />
     <ClInclude Include="..\..\src\cqueue.hpp" />
+    <ClInclude Include="..\..\src\ring_buffer.hpp" />
     <ClInclude Include="..\..\src\timer_contexts.hpp" />
     <ClInclude Include="..\..\src\visualizer_client.hpp" />
   </ItemGroup>

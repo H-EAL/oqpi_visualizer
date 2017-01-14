@@ -2,3 +2,4 @@ tmp/
 *.sdf
 *.opendb
 *.db
+bin/

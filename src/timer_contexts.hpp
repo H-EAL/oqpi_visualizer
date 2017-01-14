@@ -19,11 +19,11 @@ int64_t first_measure()
     return firstMeasure;
 }
 
-int32_t query_performance_counter()
+uint32_t query_performance_counter()
 {
     first_measure();
     const auto t = query_performance_counter_aux();
-    return int32_t(t - first_measure());
+    return uint32_t(t - first_measure());
 }
 
 int64_t query_performance_frequency()
@@ -40,20 +40,34 @@ double duration(int64_t s, int64_t e)
     return (dt / (F*1.0)) * 1000.0;
 }
 
+enum opcode : uint8_t
+{
+    register_task,
+    unregister_task,
+    add_to_group,
+    start_task,
+    end_task,
+
+    count
+};
+
+struct task_info
+{
+    using thread_id = oqpi::thread_interface<>::id;
+
+    oqpi::task_uid  uid             = oqpi::invalid_task_uid;
+    oqpi::task_uid  groupUID        = oqpi::invalid_task_uid;
+    uint32_t        startedAt       = 0;
+    uint32_t        stoppedAt       = 0;
+    thread_id       startedOnThread = 0;
+    thread_id       stoppedOnThread = 0;
+    uint8_t         startedOnCore   = 0xFF;
+    uint8_t         stoppedOnCore   = 0xFF;
+};
 
 class timing_registry
 {
 public:
-    enum opcode : uint32_t
-    {
-        register_task,
-        add_to_group,
-        unregister_task,
-        start_task,
-        end_task,
-
-        count
-    };
 
     timing_registry()
     {}
@@ -64,74 +78,9 @@ public:
         return instance;
     }
 
-    void registerTask(oqpi::task_uid uid, const std::string &name)
+    void send(const task_info &ti, const std::string &name)
     {
-        auto t = query_performance_counter();
-
-        std::string msg = "Task #";
-        msg += std::to_string(uid);
-        msg += " named ";
-        msg += name;
-        msg += " created @t=";
-        msg += std::to_string(t);
-
-        client_.send(msg);
-    }
-
-    void unregisterTask(oqpi::task_uid uid)
-    {
-        auto t = query_performance_counter();
-
-        std::string msg = "Task #";
-        msg += std::to_string(uid);
-        msg += " deleted @t=";
-        msg += std::to_string(t);
-
-        client_.send(msg);
-    }
-
-    void startTask(oqpi::task_uid uid)
-    {
-        auto t = query_performance_counter();
-        auto c = oqpi::this_thread::get_current_core();
-
-        std::string msg = "Task #";
-        msg += std::to_string(uid);
-        msg += " started on core ";
-        msg += std::to_string(c);
-        msg += " @t=";
-        msg += std::to_string(t);
-
-        client_.send(msg);
-    }
-
-    void endTask(oqpi::task_uid uid)
-    {
-        auto t = query_performance_counter();
-        auto c = oqpi::this_thread::get_current_core();
-
-        std::string msg = "Task #";
-        msg += std::to_string(uid);
-        msg += " ended on core ";
-        msg += std::to_string(c);
-        msg += " @t=";
-        msg += std::to_string(t);
-
-        client_.send(msg);
-    }
-
-    void addToGroup(oqpi::task_uid guid, oqpi::task_handle hTask)
-    {
-        auto t = query_performance_counter();
-
-        std::string msg = "Task #";
-        msg += std::to_string(hTask.getUID());
-        msg += " added to group #";
-        msg += std::to_string(guid);
-        msg += " @t=";
-        msg += std::to_string(t);
-
-        client_.send(msg);
+        client_.encodeAndSend(ti, name);
     }
 
 private:
@@ -145,25 +94,36 @@ public:
     timer_task_context(oqpi::task_base *pOwner, const std::string &name)
         : oqpi::task_context_base(pOwner, name)
     {
-        timing_registry::get().registerTask(pOwner->getUID(), name);
+        ti_.uid = pOwner->getUID();
+        name_   = name;
     }
 
     ~timer_task_context()
     {
-        timing_registry::get().unregisterTask(this->owner()->getUID());
+        timing_registry::get().send(ti_, name_);
+    }
+
+    inline void onAddedToGroup(const oqpi::task_group_sptr &spParentGroup)
+    {
+        ti_.groupUID = spParentGroup->getUID();
     }
 
     inline void onPreExecute()
     {
-        timing_registry::get().startTask(this->owner()->getUID());
+        ti_.startedOnCore   = oqpi::this_thread::get_current_core();
+        ti_.startedOnThread = oqpi::this_thread::get_id();
+        ti_.startedAt       = query_performance_counter();
     }
 
     inline void onPostExecute()
     {
-        timing_registry::get().endTask(this->owner()->getUID());
+        ti_.stoppedAt       = query_performance_counter();
+        ti_.startedOnCore   = oqpi::this_thread::get_current_core();
+        ti_.startedOnThread = oqpi::this_thread::get_id();
     }
 
-private:
+    task_info   ti_;
+    std::string name_;
 };
 
 
@@ -174,31 +134,34 @@ public:
     timer_group_context(oqpi::task_group_base *pOwner, const std::string &name)
         : oqpi::group_context_base(pOwner, name)
     {
-        timing_registry::get().registerTask(pOwner->getUID(), name);
+        ti_.uid = pOwner->getUID();
+        name_ = name;
     }
 
     ~timer_group_context()
     {
-        timing_registry::get().unregisterTask(this->owner()->getUID());
     }
 
-    inline void onTaskAdded(const oqpi::task_handle &hTask)
+    inline void onAddedToGroup(const oqpi::task_group_sptr &spParentGroup)
     {
-        timing_registry::get().addToGroup(this->owner()->getUID(), hTask);
+        ti_.groupUID = spParentGroup->getUID();
     }
 
     inline void onPreExecute()
     {
-        timing_registry::get().startTask(this->owner()->getUID());
+        ti_.startedOnCore = oqpi::this_thread::get_current_core();
+        ti_.startedOnThread = oqpi::this_thread::get_id();
+        ti_.startedAt = query_performance_counter();
     }
 
     inline void onPostExecute()
     {
-        timing_registry::get().endTask(this->owner()->getUID());
+        ti_.stoppedAt = query_performance_counter();
+        ti_.startedOnCore = oqpi::this_thread::get_current_core();
+        ti_.startedOnThread = oqpi::this_thread::get_id();
+        timing_registry::get().send(ti_, name_);
     }
+
+    task_info   ti_;
+    std::string name_;
 };
-
-
-namespace this_task {
-
-}

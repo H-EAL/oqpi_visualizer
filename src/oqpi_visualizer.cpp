@@ -11,8 +11,8 @@ using namespace std::chrono_literals;
 
 //--------------------------------------------------------------------------------------------------
 // Types
-using thread = oqpi::thread_interface;
-using semaphore = oqpi::semaphore_interface;
+using thread = oqpi::thread_interface<>;
+using semaphore = oqpi::semaphore_interface<>;
 template<typename T>
 using cqueue = qqueue<T, std::mutex>;
 using scheduler_type = oqpi::scheduler<cqueue>;
@@ -31,7 +31,7 @@ void setup_environment()
     for (auto i = 0u; i < workerCount; ++i)
     {
         auto config = oqpi::worker_config{};
-        config.threadAttributes.coreAffinityMask_ = oqpi::core_affinity(1 << i);
+        config.threadAttributes.coreAffinityMask_ = oqpi::core_affinity::all_cores;//oqpi::core_affinity(1 << i);
         config.threadAttributes.name_ = "oqpi::worker_" + std::to_string(i);
         config.threadAttributes.priority_ = oqpi::thread_priority::highest;
         config.workerPrio = oqpi::worker_priority::wprio_any;
@@ -236,9 +236,9 @@ void clean_up_environement()
 int main()
 {
     setup_environment();
+    oqpi::this_thread::sleep_for(5ms);
     while (true)
     {
-        oqpi::this_thread::sleep_for(5ms);
         test_unit_task_result();
         oqpi::this_thread::sleep_for(5ms);
         test_unit_task();
@@ -254,7 +254,8 @@ int main()
         test_parallel_for();
         oqpi::this_thread::sleep_for(5ms);
         test_parallel_for_task();
-        oqpi::this_thread::sleep_for(10s);
+         oqpi::this_thread::sleep_for(2s);
     }
     clean_up_environement();
+    getchar();
 }
